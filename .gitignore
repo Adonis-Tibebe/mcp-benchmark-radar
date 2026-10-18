@@ -34,3 +34,10 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+#node
+pakage-lock.json
+package.json
+
+#local execution plan
+EXECUTION_PLAN.md
