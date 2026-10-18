@@ -1,0 +1,43 @@
+# Python & Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+
+# Databases & Local Dynamic Data
+data/benchmarks.db
+*.sqlite3
+*.db
+
+# Node & Inspector
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+#node
+pakage-lock.json
+package.json
+
+#local execution plan
+EXECUTION_PLAN.md
