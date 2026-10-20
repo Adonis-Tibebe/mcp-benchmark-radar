@@ -413,6 +413,35 @@ def save_research_brief(filename: str, content: str) -> str:
 
 
 # ============================================================================
+# Tool 5: List Local Research Briefs
+# ============================================================================
+
+@mcp.tool()
+def list_research_briefs() -> str:
+    """List all available research briefs and upgrade plans in data/research_briefs/.
+
+    Use this tool when you need to inspect existing markdown notes, discover the exact
+    filename of a previous upgrade plan or baseline note, or explore previously
+    saved research briefs before reading or updating them.
+
+    Returns:
+        A list of available markdown filenames in data/research_briefs/, or an informative recovery message.
+    """
+    logger.info("list_research_briefs called")
+    if not BRIEFS_DIR.exists():
+        return "No research briefs found. Directory data/research_briefs/ does not exist yet."
+
+    try:
+        files = sorted([f.name for f in BRIEFS_DIR.glob("*.md") if f.is_file()])
+        if not files:
+            return "No research briefs found in data/research_briefs/."
+        return "Available research briefs in data/research_briefs/:\n" + "\n".join(f"- {name}" for name in files)
+    except Exception as exc:
+        logger.error("Failed to list research briefs: %s", exc)
+        return f"Error listing research briefs: {str(exc)}"
+
+
+# ============================================================================
 # Stretch Goal Primitives: MCP Resource & MCP Prompt
 # ============================================================================
 

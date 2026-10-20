@@ -161,6 +161,48 @@ class BenchmarkRadarAgent:
 
         return [types.Tool(function_declarations=declarations)]
 
+    @staticmethod
+    def _extract_mcp_text(items: Any) -> str:
+        """Extract text blocks from MCP resource contents or prompt messages."""
+        if not isinstance(items, (list, tuple)):
+            return ""
+
+        text_parts: List[str] = []
+        for item in items:
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                text_parts.append(text)
+                continue
+
+            content = getattr(item, "content", None)
+            content_text = getattr(content, "text", None)
+            if isinstance(content_text, str):
+                text_parts.append(content_text)
+
+        return "\n".join(text_parts)
+
+    async def _load_mcp_context(self, session: ClientSession) -> str:
+        """Load the known MCP resource and prompt as model-readable context."""
+        schema_response = await session.read_resource("radar://database-schema")
+        database_schema = self._extract_mcp_text(
+            getattr(schema_response, "contents", ())
+        )
+
+        workflow_response = await session.get_prompt(
+            "benchmark_upgrade_workflow",
+            arguments={},
+        )
+        workflow_prompt = self._extract_mcp_text(
+            getattr(workflow_response, "messages", ())
+        )
+
+        context_sections: List[str] = []
+        if database_schema:
+            context_sections.append(f"MCP database schema resource:\n{database_schema}")
+        if workflow_prompt:
+            context_sections.append(f"MCP benchmark upgrade prompt:\n{workflow_prompt}")
+        return "\n\n".join(context_sections)
+
     @asynccontextmanager
     async def _open_server_connection(self) -> AsyncIterator[Tuple[Any, Any]]:
         """Step 1: Establish the MCP client connection over the configured transport.
@@ -248,14 +290,18 @@ class BenchmarkRadarAgent:
                     mcp_tools = tools_response.tools
                     logger.info("Retrieved %d tools from MCP server", len(mcp_tools))
 
-                    # Step 3: Convert schemas and pass to Gemini
+                    # Step 3: Convert schemas and load non-tool MCP context
                     genai_tools = self._convert_mcp_to_genai_tools(mcp_tools)
+                    mcp_context = await self._load_mcp_context(session)
 
                     # Initialize multi-turn contents list
+                    initial_text = user_prompt
+                    if mcp_context:
+                        initial_text = f"{mcp_context}\n\nUser request:\n{user_prompt}"
                     contents: List[Any] = [
                         types.Content(
                             role="user",
-                            parts=[types.Part.from_text(text=user_prompt)],
+                            parts=[types.Part.from_text(text=initial_text)],
                         )
                     ]
 
