@@ -84,6 +84,14 @@ async def test_agent_loop_mocked(monkeypatch):
     mock_session = AsyncMock()
     mock_session.initialize.return_value = None
     mock_session.list_tools.return_value = MagicMock(tools=[mock_mcp_tool])
+    mock_schema_content = MagicMock()
+    mock_schema_content.text = "CREATE TABLE model_benchmarks (...);"
+    mock_session.read_resource.return_value = MagicMock(contents=[mock_schema_content])
+    mock_prompt_content = MagicMock()
+    mock_prompt_content.text = "Use query_benchmarks before searching for SOTA work."
+    mock_session.get_prompt.return_value = MagicMock(
+        messages=[MagicMock(content=mock_prompt_content)]
+    )
 
     mock_tool_result = MagicMock()
     mock_tool_part = MagicMock()
@@ -104,4 +112,13 @@ async def test_agent_loop_mocked(monkeypatch):
         assert "MobileNetV2 is 0.842" in result["final_answer"]
         assert len(result["tool_trace"]) == 1
         assert result["tool_trace"][0]["tool"] == "query_benchmarks"
+        mock_session.read_resource.assert_awaited_once_with("radar://database-schema")
+        mock_session.get_prompt.assert_awaited_once_with(
+            "benchmark_upgrade_workflow",
+            arguments={},
+        )
+        initial_request = agent.genai_client.models.generate_content.call_args_list[0]
+        initial_text = initial_request.kwargs["contents"][0].parts[0].text
+        assert "CREATE TABLE model_benchmarks" in initial_text
+        assert "Use query_benchmarks before searching" in initial_text
     

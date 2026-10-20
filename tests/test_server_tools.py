@@ -19,6 +19,7 @@ from src.mcp_server import (
     benchmark_upgrade_workflow,
     get_database_schema,
     query_benchmarks,
+    list_research_briefs,
     read_research_brief,
     save_research_brief,
     search_ml_web_and_github,
@@ -250,3 +251,11 @@ def test_benchmark_upgrade_workflow_prompt():
     prompt_general = benchmark_upgrade_workflow()
     assert "lowest accuracy in the database" in prompt_general
     assert "upgrade_plan.md" in prompt_general
+
+def test_list_research_briefs_valid():
+    """Verify list_research_briefs returns existing markdown notes."""
+    result = list_research_briefs()
+    assert "Available research briefs in data/research_briefs/:" in result
+    assert "plantvillage_baseline.md" in result
+    assert "amharic_ocr_notes.md" in result
+
