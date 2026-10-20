@@ -14,14 +14,16 @@ import asyncio
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -84,6 +86,11 @@ class BenchmarkRadarAgent:
             self.model_name = raw_model
         self.transport = os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
         self.server_script = server_script_path or (PROJECT_ROOT / "src" / "mcp_server.py")
+        # Streamable HTTP mode settings (used only when MCP_TRANSPORT=http)
+        self.server_url = (
+            os.getenv("MCP_SERVER_URL", "") or "http://127.0.0.1:8000/mcp"
+        ).strip() or "http://127.0.0.1:8000/mcp"
+        self.bearer_token = (os.getenv("MCP_API_KEY", "") or os.getenv("MCP_READ_ONLY_API_KEY", "")).strip()
 
         # Validate API key presence without logging the secret value
         if not self.api_key or self.api_key == "your_gemini_api_key_here":
@@ -130,6 +137,31 @@ class BenchmarkRadarAgent:
 
         return [types.Tool(function_declarations=declarations)]
 
+    @asynccontextmanager
+    async def _open_server_connection(self) -> AsyncIterator[Tuple[Any, Any]]:
+        """Step 1: Establish the MCP client connection over the configured transport.
+
+        - stdio (default): spawns src/mcp_server.py as a subprocess and pipes JSON-RPC.
+        - http (MCP_TRANSPORT=http): connects to MCP_SERVER_URL using Streamable HTTP,
+          attaching 'Authorization: Bearer <MCP_API_KEY>' when a key is configured.
+
+        Yields:
+            (read_stream, write_stream) consumed by the MCP ClientSession.
+        """
+        if self.transport == "http":
+            headers = {"Authorization": f"Bearer {self.bearer_token}"} if self.bearer_token else {}
+            http_client = create_mcp_http_client(headers=headers) if headers else None
+            async with streamable_http_client(self.server_url, http_client=http_client) as streams:
+                yield streams
+        else:
+            server_params = StdioServerParameters(
+                command=sys.executable,
+                args=[str(self.server_script)],
+                env=dict(os.environ),
+            )
+            async with stdio_client(server_params) as streams:
+                yield streams
+
     async def run(
         self,
         user_prompt: str,
@@ -163,23 +195,17 @@ class BenchmarkRadarAgent:
                 ),
             }
 
-        # Verify server script exists
-        if not self.server_script.exists():
+        # Verify server script exists (stdio mode requirement)
+        if self.transport != "http" and not self.server_script.exists():
             return {
                 "final_answer": "",
                 "tool_trace": [],
                 "error": f"MCP server script not found at {self.server_script}.",
             }
 
-        # Step 1: Establish MCP Client connection
-        server_params = StdioServerParameters(
-            command=sys.executable,
-            args=[str(self.server_script)],
-            env=dict(os.environ),
-        )
-
+        # Step 1: Establish MCP Client connection (stdio subprocess or Streamable HTTP)
         try:
-            async with stdio_client(server_params) as (read_stream, write_stream):
+            async with self._open_server_connection() as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     # Initialize MCP session
                     await session.initialize()

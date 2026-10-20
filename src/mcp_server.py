@@ -10,19 +10,35 @@ CRITICAL CONSTRAINTS:
 - Safe error recovery strings returned to LLM on invalid inputs or missing data.
 """
 
+import hmac
 import logging
+import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from duckduckgo_search import DDGS
+from dotenv import load_dotenv
 
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
     from fastmcp import FastMCP
+
+# HTTP-mode auth primitives (Bearer verifier, scope middleware) come from the
+# fastmcp package itself. The official SDK v2.x renamed FastMCP to MCPServer,
+# so Streamable HTTP + authentication requires fastmcp to be installed.
+try:
+    from fastmcp.server.auth import AccessToken, TokenVerifier
+    from fastmcp.exceptions import ToolError
+    from fastmcp.server.dependencies import get_access_token
+    from fastmcp.server.middleware import Middleware, MiddlewareContext
+
+    HTTP_AUTH_AVAILABLE = True
+except ImportError:  # graceful degradation: stdio mode remains fully functional
+    HTTP_AUTH_AVAILABLE = False
 
 # Configure logging strictly to sys.stderr (NEVER stdout in stdio mode)
 logger = logging.getLogger("mcp_server")
@@ -476,9 +492,192 @@ def benchmark_upgrade_workflow(dataset_name: str = "") -> str:
 
 
 # ============================================================================
-# Main Entry Point (stdio transport by default)
+# HTTP Transport: Bearer Authentication & Scoped Access (Sprint 4)
+# ============================================================================
+
+READ_WRITE_SCOPE = "read-write"
+READ_ONLY_SCOPE = "read-only"
+
+# Tools that mutate state and therefore require the 'read-write' scope.
+# Every other tool (query/search/read) is read-only by nature and stays
+# accessible to both token roles.
+WRITE_PROTECTED_TOOLS = frozenset({"save_research_brief"})
+
+HTTP_HOST = "127.0.0.1"
+HTTP_PORT = 8000
+HTTP_PATH = "/mcp"
+
+
+def load_bearer_tokens() -> Tuple[str, str]:
+    """Load scoped Bearer tokens from .env via python-dotenv.
+
+    Roles:
+        - MCP_API_KEY           -> 'read-write' (all tools allowed)
+        - MCP_READ_ONLY_API_KEY -> 'read-only'  (write-protected tools blocked)
+
+    Returns:
+        Tuple of (write_key, read_only_key). Either string may be empty when unset;
+        HTTP mode refuses to start when both roles are not configured (fail closed).
+    """
+    load_dotenv(dotenv_path=PROJECT_ROOT / ".env")
+    write_key = os.getenv("MCP_API_KEY", "").strip()
+    read_only_key = os.getenv("MCP_READ_ONLY_API_KEY", "").strip()
+    return write_key, read_only_key
+
+
+class BearerTokenVerifier(TokenVerifier):
+    """Validate Bearer tokens and assign scopes based on the configured role keys.
+
+    Registered in HTTP mode (bearer auth checks 'Authorization: Bearer <token>').
+    Accepted tokens:
+        - MCP_API_KEY            -> scope 'read-write' (all tools allowed)
+        - MCP_READ_ONLY_API_KEY  -> scope 'read-only'  (write-protected tools blocked)
+
+    Unknown, missing, or malformed tokens return None, which fastmcp converts into
+    an HTTP 401 rejection so the caller can retry with a valid token.
+    """
+
+    def __init__(self, write_key: str = "", read_only_key: str = ""):
+        """Initialize with the configured role tokens."""
+        super().__init__()
+        self._write_key = write_key.strip()
+        self._read_only_key = read_only_key.strip()
+        if self._write_key and self._read_only_key and hmac.compare_digest(self._write_key, self._read_only_key):
+            logger.warning("MCP_READ_ONLY_API_KEY matches MCP_API_KEY; write access takes precedence.")
+            self._read_only_key = ""
+
+    async def verify_token(self, token: str) -> Optional[AccessToken]:
+        """Check the Bearer token against both configured keys (constant-time compare).
+
+        Returns:
+            AccessToken with the matching role scope, or None when rejected.
+        """
+        candidate = (token or "").strip()
+        if not candidate:
+            logger.warning("Bearer token missing on HTTP request.")
+            return None
+        if self._write_key and hmac.compare_digest(candidate, self._write_key):
+            logger.info("Bearer token accepted with scope '%s'.", READ_WRITE_SCOPE)
+            return AccessToken(
+                token=candidate,
+                client_id="benchmark-radar-write",
+                scopes=[READ_WRITE_SCOPE],
+            )
+        if self._read_only_key and hmac.compare_digest(candidate, self._read_only_key):
+            logger.info("Bearer token accepted with scope '%s'.", READ_ONLY_SCOPE)
+            return AccessToken(
+                token=candidate,
+                client_id="benchmark-radar-read-only",
+                scopes=[READ_ONLY_SCOPE],
+            )
+        logger.warning("Rejected invalid or unknown Bearer token attempt.")
+        return None
+
+
+class ScopeEnforcementMiddleware(Middleware):
+    """Deny write-protected tools when the active Bearer token only has the read-only scope.
+
+    All existing tools are read-only by nature except save_research_brief, so scope
+    enforcement only needs to guard WRITE_PROTECTED_TOOLS. Blocked calls raise a
+    ToolError with a descriptive recovery string (never an unhandled crash), keeping
+    the sprint-2 error-recovery contract consistent: read-only clients can still
+    query/search/read; and the LLM receives actionable instructions in the error text.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        """Enforce tool-level scope before dispatching the MCP tool call request."""
+        tool_name = str(getattr(context.message, "name", "") or "")
+
+        # Read-only safe: everything except the write-protected set passes through.
+        if tool_name not in WRITE_PROTECTED_TOOLS:
+            return await call_next(context)
+
+        access_token = get_access_token()
+        scopes = list(getattr(access_token, "scopes", []) or [])
+        if READ_WRITE_SCOPE in scopes:
+            return await call_next(context)
+
+        logger.warning(
+            "Blocked tool '%s': token scopes %s lack '%s'.",
+            tool_name,
+            scopes if scopes else "(none)",
+            READ_WRITE_SCOPE,
+        )
+        raise ToolError(
+            f"Access denied: tool '{tool_name}' requires the '{READ_WRITE_SCOPE}' scope. "
+            f"Current token scopes: {', '.join(scopes) if scopes else '(none)'}. "
+            "Authenticate with the write-scoped MCP_API_KEY token to save research "
+            "briefs, or continue with read-only tools such as query_benchmarks, "
+            "search_ml_web_and_github, and read_research_brief."
+        )
+
+
+def resolve_transport(cli_transport: str = "") -> str:
+    """Resolve the transport mode: explicit CLI argument overrides MCP_TRANSPORT (default stdio).
+
+    Returns:
+        'stdio' or 'http'. Unknown values fall back safely to 'stdio' with a warning.
+    """
+    candidate = (cli_transport or os.getenv("MCP_TRANSPORT", "")).strip().lower()
+    if candidate not in ("stdio", "http"):
+        if candidate:
+            logger.warning("Unknown transport '%s'; falling back to 'stdio'.", candidate)
+        return "stdio"
+    return candidate
+
+
+# ============================================================================
+# Main Entry Point (stdio transport by default, HTTP with auth via MCP_TRANSPORT)
 # ============================================================================
 
 if __name__ == "__main__":
-    logger.info("Starting Benchmark-Radar FastMCP Server on stdio transport...")
-    mcp.run(transport="stdio", show_banner=False)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Benchmark-Radar FastMCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default="",
+        help="MCP transport (overrides MCP_TRANSPORT env var; defaults to stdio)",
+    )
+    parser.add_argument("--host", default=HTTP_HOST, help="HTTP bind host (http mode)")
+    parser.add_argument("--port", type=int, default=HTTP_PORT, help="HTTP bind port (http mode)")
+    args = parser.parse_args()
+
+    selected_transport = resolve_transport(args.transport)
+
+    if selected_transport == "http":
+        if not HTTP_AUTH_AVAILABLE:
+            logger.error(
+                "HTTP mode requires the fastmcp package (auth verifier & middleware). "
+                "Install fastmcp or run with MCP_TRANSPORT=stdio."
+            )
+            sys.exit(2)
+
+        write_key, read_only_key = load_bearer_tokens()
+        if not write_key and not read_only_key:
+            # Fail closed: never expose an unauthenticated HTTP MCP server.
+            logger.error(
+                "HTTP mode requires at least MCP_API_KEY in .env. "
+                "Refusing to start an unauthenticated server."
+            )
+            sys.exit(2)
+
+        mcp.auth = BearerTokenVerifier(write_key, read_only_key)
+        mcp.add_middleware(ScopeEnforcementMiddleware())
+        logger.info(
+            "Starting Benchmark-Radar FastMCP Server on Streamable HTTP at http://%s:%s%s ...",
+            args.host,
+            args.port,
+            HTTP_PATH,
+        )
+        mcp.run(
+            transport="http",
+            host=args.host,
+            port=args.port,
+            path=HTTP_PATH,
+            show_banner=False,
+        )
+    else:
+        logger.info("Starting Benchmark-Radar FastMCP Server on stdio transport...")
+        mcp.run(transport="stdio", show_banner=False)
