@@ -11,6 +11,7 @@ Decoupled from CLI and Web UI for modularity and reusability.
 """
 
 import asyncio
+import hmac
 import logging
 import os
 import sys
@@ -44,7 +45,7 @@ and synthesize comprehensive research briefs.
 
 Always use your tools when requested:
 1. Query benchmarks in the SQLite database to inspect baselines.
-2. Read research briefs to review detailed failure modes and dataset notes.
+2. List available briefs (`list_research_briefs`) or read specific notes (`read_research_brief`) to review failure modes and existing upgrade plans.
 3. Search web and GitHub for cutting-edge architectures, papers, and repositories.
 4. Save structured upgrade briefs with actionable recommendations to data/research_briefs/.
 
@@ -67,6 +68,9 @@ class BenchmarkRadarAgent:
         server_script_path: Optional[Path] = None,
         model_name: Optional[str] = None,
         env_file_path: Optional[Path] = None,
+        transport: Optional[str] = None,
+        bearer_token: Optional[str] = None,
+        server_url: Optional[str] = None,
     ):
         """Initialize the agent with environment configuration."""
         # Load environment variables
@@ -79,18 +83,24 @@ class BenchmarkRadarAgent:
         self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
         # Fallback to gemini-3.8-flash if model is unset or set to deprecated gemini-2.5-flash
         raw_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-3.8-flash")).strip()
-        if raw_model in ("gemini-2.5-flash", "gemini-2.5-flash-lite"):
-            logger.info("Auto-updating deprecated model '%s' to 'gemini-3.8-flash'", raw_model)
-            self.model_name = "gemini-3.8-flash"
-        else:
-            self.model_name = raw_model
-        self.transport = os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
+        self.model_name = raw_model
+        # if raw_model in ("gemini-2.5-flash", "gemini-2.5-flash-lite"):
+        #     logger.info("Auto-updating deprecated model '%s' to 'gemini-3.8-flash'", raw_model)
+        #     self.model_name = "gemini-3.8-flash"
+        # else:
+        #     self.model_name = raw_model 
+        self.transport = (transport or os.getenv("MCP_TRANSPORT", "stdio")).strip().lower()
         self.server_script = server_script_path or (PROJECT_ROOT / "src" / "mcp_server.py")
         # Streamable HTTP mode settings (used only when MCP_TRANSPORT=http)
         self.server_url = (
-            os.getenv("MCP_SERVER_URL", "") or "http://127.0.0.1:8000/mcp"
-        ).strip() or "http://127.0.0.1:8000/mcp"
-        self.bearer_token = (os.getenv("MCP_API_KEY", "") or os.getenv("MCP_READ_ONLY_API_KEY", "")).strip()
+            server_url or os.getenv("MCP_SERVER_URL", "") or "http://127.0.0.1:8000/mcp"
+        ).strip()
+        if bearer_token is not None:
+            self.bearer_token = bearer_token.strip()
+        else:
+            self.bearer_token = (
+                os.getenv("MCP_API_KEY", "") or os.getenv("MCP_READ_ONLY_API_KEY", "")
+            ).strip()
 
         # Validate API key presence without logging the secret value
         if not self.api_key or self.api_key == "your_gemini_api_key_here":
@@ -101,6 +111,20 @@ class BenchmarkRadarAgent:
 
         # Initialize Google GenAI client if key is available
         self.genai_client = genai.Client(api_key=self.api_key) if self.api_key else None
+    
+    @property
+    def permission_scope(self) -> str:
+        """Determine human-readable permission level of the active bearer token."""
+        write_key = os.getenv("MCP_API_KEY", "").strip()
+        read_only_key = os.getenv("MCP_READ_ONLY_API_KEY", "").strip()
+
+        if not self.bearer_token:
+            return "unauthenticated (no token)"
+        if write_key and hmac.compare_digest(self.bearer_token, write_key):
+            return "read-write (full access: queries, search, save_research_brief)"
+        if read_only_key and hmac.compare_digest(self.bearer_token, read_only_key):
+            return "read-only (restricted: save_research_brief is blocked)"
+        return "custom token (unverified scope)" 
 
     def _convert_mcp_to_genai_tools(self, mcp_tools: List[Any]) -> List[types.Tool]:
         """Convert MCP tool definitions into Google GenAI Tool declarations."""
@@ -149,11 +173,20 @@ class BenchmarkRadarAgent:
             (read_stream, write_stream) consumed by the MCP ClientSession.
         """
         if self.transport == "http":
+            logger.info(
+                "Connecting to MCP server at %s via Streamable HTTP [Permission: %s]",
+                self.server_url,
+                self.permission_scope,
+            )
             headers = {"Authorization": f"Bearer {self.bearer_token}"} if self.bearer_token else {}
             http_client = create_mcp_http_client(headers=headers) if headers else None
             async with streamable_http_client(self.server_url, http_client=http_client) as streams:
                 yield streams
         else:
+            logger.info(
+                "Connecting to MCP server via stdio transport (spawning %s)",
+                self.server_script.name,
+            )
             server_params = StdioServerParameters(
                 command=sys.executable,
                 args=[str(self.server_script)],
