@@ -25,6 +25,7 @@ work together instead of relying on a pre-built host.
 +--------------------------------------------------------------------------+
 | 1. Presentation Tier                                                     |
 |    - src/cli.py: Interactive REPL & Single-Prompt CLI Runner             |
+|    - src/web_ui.py: Streamlit Web Chat Interface                         |
 |    - Live tool-execution formatting & Connection permission banner       |
 +------------------------------------+-------------------------------------+
                                      |
@@ -127,6 +128,13 @@ Provides interactive and one-shot use. With default settings it connects over
 stdio and starts the MCP server as a local subprocess. With
 `--transport http`, it connects to an already-running HTTP server; that server
 must be started separately.
+
+### `src/web_ui.py`
+
+Provides an optional browser-based chat interface using Streamlit. It imports
+the exact same `BenchmarkRadarAgent` as the CLI, renders synthesized research
+briefs in structured Markdown, and groups MCP tool execution steps in
+collapsible accordions to keep the conversation clean.
 
 ### `src/agent_core.py`
 

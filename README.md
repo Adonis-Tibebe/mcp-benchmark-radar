@@ -102,6 +102,10 @@ MCP_API_KEY=dev-secret-token
 MCP_READ_ONLY_API_KEY=dev-read-only-token
 ```
 
+> **Gemini availability note:** Gemini models may occasionally return `5XX` server
+> errors or `429` rate-limit errors. If this happens, update `GEMINI_MODEL` in
+> your `.env` file to another available Gemini model and restart the application.
+
 The example HTTP commands and authentication tests use the bearer tokens
 defined in `.env.example`: `dev-secret-token` for read-write access and
 `dev-read-only-token` for read-only access. To test different tokens, add them
@@ -171,9 +175,28 @@ python src/cli.py --transport http --token dev-read-only-token
 
 ---
 
+### Mode C: Streamlit Web UI Wrapper (Optional Bonus)
+
+You can launch a clean, interactive browser interface:
+
+```bash
+# Launch in default stdio mode:
+streamlit run src/web_ui.py
+
+# Launch pointing to an external Streamable HTTP server:
+streamlit run src/web_ui.py -- --transport http --token dev-secret-token
+```
+
+The web interface features:
+- Clean chat interface with structured Markdown rendering for research briefs and tables.
+- Collapsible MCP tool execution traces that keep detailed logs neatly out of the main chat flow.
+- Sidebar controls to dynamically select transport modes (`stdio` vs. `http`), configure endpoints/tokens, or test with quick-query buttons.
+
+---
+
 ### Command-Line Arguments and Defaults
 
-The project has three runnable Python files. The following table explains what
+The project has four runnable Python files. The following table explains what
 each argument does and what happens when it is omitted.
 
 #### `src/cli.py` — application client
@@ -243,8 +266,17 @@ python data/seed_db.py
 
 It creates or refreshes `data/benchmarks.db` and writes starter notes to
 `data/research_briefs/`. The agent core (`src/agent_core.py`) is an imported
-library component, not a standalone command-line program; `src/cli.py` is its
-application entry point.
+library component, not a standalone command-line program; `src/cli.py` and
+`src/web_ui.py` are its application entry points.
+
+#### `src/web_ui.py` — web chat client
+
+```text
+streamlit run src/web_ui.py [-- --transport {stdio,http} --token TOKEN --url URL]
+```
+
+Accepts optional `--transport`, `--token`, and `--url` arguments passed after `--`.
+If omitted, defaults are read from `.env` or adjusted live using the sidebar.
 
 ## Testing with MCP Inspector
 
