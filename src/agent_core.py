@@ -182,25 +182,32 @@ class BenchmarkRadarAgent:
         return "\n".join(text_parts)
 
     async def _load_mcp_context(self, session: ClientSession) -> str:
-        """Load the known MCP resource and prompt as model-readable context."""
-        schema_response = await session.read_resource("radar://database-schema")
-        database_schema = self._extract_mcp_text(
-            getattr(schema_response, "contents", ())
-        )
-
-        workflow_response = await session.get_prompt(
-            "benchmark_upgrade_workflow",
-            arguments={},
-        )
-        workflow_prompt = self._extract_mcp_text(
-            getattr(workflow_response, "messages", ())
-        )
-
+        """Load the known MCP resource and prompt as model-readable context with graceful error recovery."""
         context_sections: List[str] = []
-        if database_schema:
-            context_sections.append(f"MCP database schema resource:\n{database_schema}")
-        if workflow_prompt:
-            context_sections.append(f"MCP benchmark upgrade prompt:\n{workflow_prompt}")
+
+        try:
+            schema_response = await session.read_resource("radar://database-schema")
+            database_schema = self._extract_mcp_text(
+                getattr(schema_response, "contents", ())
+            )
+            if database_schema:
+                context_sections.append(f"MCP database schema resource:\n{database_schema}")
+        except Exception as exc:
+            logger.warning("Could not read database-schema resource: %s", exc)
+
+        try:
+            workflow_response = await session.get_prompt(
+                "benchmark_upgrade_workflow",
+                arguments={},
+            )
+            workflow_prompt = self._extract_mcp_text(
+                getattr(workflow_response, "messages", ())
+            )
+            if workflow_prompt:
+                context_sections.append(f"MCP benchmark upgrade prompt:\n{workflow_prompt}")
+        except Exception as exc:
+            logger.warning("Could not read benchmark_upgrade_workflow prompt: %s", exc)
+
         return "\n\n".join(context_sections)
 
     @asynccontextmanager
