@@ -6,8 +6,7 @@ import os
 import httpx
 
 
-SEARCH_PACKAGE = os.getenv("SEARCH_PACKAGE", "duckduckgo_search")
-DDGS = getattr(importlib.import_module(SEARCH_PACKAGE), "DDGS")
+from ddgs import DDGS
 
 
 def search_web(query, max_results=4):
@@ -59,12 +58,16 @@ def search_github(query, max_results=4):
         with httpx.Client(timeout=10.0) as client:
             response = client.get(url, headers=headers, params=params)
 
+        print(f"[debug] GitHub HTTP {response.status_code}: {response.url}")
+
         if response.status_code == 403:
+            print(f"[debug] GitHub response: {response.text[:500]}")
             return (
                 "Error: GitHub API rate limit reached (HTTP 403). "
                 "Please switch source to 'web' for DuckDuckGo search or retry shortly."
             )
         if response.status_code != 200:
+            print(f"[debug] GitHub response: {response.text[:500]}")
             return (
                 f"Error querying GitHub API (HTTP {response.status_code}): "
                 f"{response.text[:200]}. You may retry with source='web'."
@@ -72,6 +75,7 @@ def search_github(query, max_results=4):
 
         items = response.json().get("items", [])
         if not items:
+            print(f"[debug] GitHub returned no repositories: {response.text[:500]}")
             return (
                 f"No GitHub repositories found matching query: '{clean_query}'. "
                 "Try using broader keywords or source='web'."
@@ -98,7 +102,7 @@ def search_github(query, max_results=4):
 
 
 if __name__ == "__main__":
-    print(f"Search package: {SEARCH_PACKAGE}")
+    print(f"Search package: ddgs")
     while True:
         try:
             source = input("\nSource [web/github, q to quit]: ").strip().lower()
