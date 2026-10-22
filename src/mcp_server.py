@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from dotenv import load_dotenv
 
 try:
