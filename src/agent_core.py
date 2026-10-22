@@ -249,7 +249,7 @@ class BenchmarkRadarAgent:
         user_prompt: str,
         on_tool_start: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         on_tool_end: Optional[Callable[[str, str], None]] = None,
-        max_iterations: int = 10,
+        max_iterations: int = 30,
     ) -> Dict[str, Any]:
         """Execute the 4-step MCP Agent loop.
 
