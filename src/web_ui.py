@@ -54,13 +54,17 @@ cli_options = parse_cli_args()
 st.sidebar.title("📡 Radar Settings")
 st.sidebar.markdown("Configure the MCP transport and server connection.")
 
+transport_options = ["stdio", "http"]
 default_transport = (
     cli_options.transport or os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
 )
+if default_transport not in transport_options:
+    default_transport = "stdio"
+
 selected_transport = st.sidebar.radio(
     "MCP Transport",
-    options=["stdio", "http"],
-    index=0 if default_transport != "http" else 1,
+    options=transport_options,
+    index=transport_options.index(default_transport),
     help="Select 'stdio' for a local subprocess or 'http' for Streamable HTTP.",
 )
 
